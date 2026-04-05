@@ -1,15 +1,28 @@
+import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
-# Подключение к Google Таблице
+from config import SPREADSHEET_ID
+
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-client = gspread.authorize(creds)
+_client = None
 
-SHEET_ID = "1QP0mT5IgA54bIS_g2EKza6J2SvvkLj_ecFVPDpDGi3A"
+
+def get_client():
+    global _client
+    if _client is None:
+        if not os.path.exists("credentials.json"):
+            raise FileNotFoundError(
+                "credentials.json не найден. Добавь файл сервисного аккаунта Google в папку с ботом."
+            )
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+        _client = gspread.authorize(creds)
+    return _client
+
 
 def get_user_info(telegram_id):
-    sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
+    sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
     records = sheet.get_all_records()
 
     for row in records:
@@ -22,11 +35,10 @@ def get_user_info(telegram_id):
             }
     return None
 
-from datetime import datetime
 
 def is_payment_today(telegram_id):
     try:
-        sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
+        sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
         records = sheet.get_all_records()
 
         for row in records:
@@ -40,65 +52,68 @@ def is_payment_today(telegram_id):
         print(f"[Ошибка is_payment_today] {e}")
         return False
 
+
 def add_user(user_id, name, car_plate):
     try:
-        sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
+        sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
         sheet.append_row([str(user_id), name, car_plate, "арендатор", "0", ""])
         print(f"Новый пользователь зарегистрирован: {name} ({car_plate}), ID: {user_id}")
     except Exception as e:
         print(f"[Ошибка add_user] {e}")
 
+
 def update_user_debt(telegram_id, new_debt):
     try:
-        sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
+        sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
         records = sheet.get_all_records()
         cell_list = sheet.range(f"A2:A{len(records) + 1}")
 
         for i, cell in enumerate(cell_list):
             if str(cell.value) == str(telegram_id):
-                sheet.update_cell(i + 2, 5, str(new_debt))  # Колонка 5 = "Задолженность"
+                sheet.update_cell(i + 2, 5, str(new_debt))
                 print(f"[OK] Задолженность пользователя {telegram_id} обновлена на {new_debt}")
                 return True
 
         print(f"[Ошибка] Пользователь с ID {telegram_id} не найден")
         return False
-
     except Exception as e:
         print(f"[Ошибка update_user_debt] {e}")
         return False
 
+
 def exists_user(telegram_id):
     try:
-        sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
+        sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
         records = sheet.get_all_records()
         return any(str(row.get("ID")) == str(telegram_id) for row in records)
     except Exception as e:
         print(f"[Ошибка exists_user] {e}")
         return False
 
+
 def update_last_payment_date(telegram_id, date_str):
     try:
-        sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
+        sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
         records = sheet.get_all_records()
         cell_list = sheet.range(f"A2:A{len(records) + 1}")
 
         for i, cell in enumerate(cell_list):
             if str(cell.value) == str(telegram_id):
-                sheet.update_cell(i + 2, 6, date_str)  # Колонка 6 = "Последняя оплата"
+                sheet.update_cell(i + 2, 6, date_str)
                 print(f"[OK] Последняя оплата обновлена: {telegram_id} — {date_str}")
                 return True
 
         print(f"[Ошибка] Пользователь с ID {telegram_id} не найден")
         return False
-
     except Exception as e:
         print(f"[Ошибка update_last_payment_date] {e}")
         return False
+
+
 def get_all_users():
     try:
-        sheet = client.open_by_key(SHEET_ID).worksheet("Пользователи")
-        records = sheet.get_all_records()
-        return records
+        sheet = get_client().open_by_key(SPREADSHEET_ID).worksheet("Пользователи")
+        return sheet.get_all_records()
     except Exception as e:
         print(f"[Ошибка get_all_users] {e}")
         return []

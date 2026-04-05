@@ -1,15 +1,14 @@
 from aiogram import Bot, Dispatcher, types, executor
-from google_api import get_all_users, is_payment_today
-import aiocron
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from datetime import datetime
+import aiocron
 
 from config import BOT_TOKEN, ADMIN_GROUP_ID
-from google_api import get_user_info, add_user
+from google_api import get_user_info, add_user, get_all_users, is_payment_today, update_last_payment_date
 
 # Инициализация
 bot = Bot(token=BOT_TOKEN)
@@ -17,10 +16,17 @@ storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 dp.middleware.setup(LoggingMiddleware())
 
-# Состояния для FSM
+
+# Состояния FSM
 class RegisterUser(StatesGroup):
     waiting_for_name = State()
     waiting_for_car = State()
+
+
+class PhotoType(StatesGroup):
+    waiting_for_check = State()
+    waiting_for_car_photo = State()
+
 
 # Старт и приветствие
 @dp.message_handler(commands=['start', 'help'])
@@ -44,8 +50,9 @@ async def greet_user(message: types.Message):
         reply_markup=keyboard
     )
 
+
 # Кнопка регистрации
-@dp.message_handler(lambda message: message.text == "🔐 Я арендатор")
+@dp.message_handler(lambda message: message.text == "🔐 Я арендатор", state="*")
 async def start_registration(message: types.Message, state: FSMContext):
     telegram_id = str(message.from_user.id)
     info = get_user_info(telegram_id)
@@ -58,12 +65,14 @@ async def start_registration(message: types.Message, state: FSMContext):
     await state.update_data(telegram_id=telegram_id)
     await message.answer("Введи своё имя:")
 
+
 # Ввод имени
 @dp.message_handler(state=RegisterUser.waiting_for_name, content_types=types.ContentTypes.TEXT)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(RegisterUser.waiting_for_car)
     await message.answer("Теперь введи госномер автомобиля (ГРЗ):")
+
 
 # Ввод ГРЗ
 @dp.message_handler(state=RegisterUser.waiting_for_car, content_types=types.ContentTypes.TEXT)
@@ -77,18 +86,15 @@ async def process_car(message: types.Message, state: FSMContext):
     await message.answer(f"Спасибо, {name}! Ты зарегистрирован как арендатор машины {car}.")
     await state.finish()
 
-# Команда /профиль
-from google_api import get_user_info, is_payment_today
 
-@dp.message_handler(commands=['профиль'])
-async def show_profile(message: types.Message):
+# Профиль (кнопка и команда)
+async def _send_profile(message: types.Message):
     user_id = str(message.from_user.id)
     info = get_user_info(user_id)
 
     if info:
         payment_today = is_payment_today(user_id)
         payment_status = "✅ Оплата за сегодня получена" if payment_today else "⚠️ Оплата за сегодня не найдена"
-
         await message.answer(
             f"👤 Имя: {info['name']}\n"
             f"🚗 Госномер: {info['car']}\n"
@@ -99,14 +105,72 @@ async def show_profile(message: types.Message):
     else:
         await message.answer("Ты не зарегистрирован в системе.")
 
-# Приём чеков (фото)
-@dp.message_handler(content_types=types.ContentType.PHOTO)
-async def receive_photo(message: types.Message):
+
+@dp.message_handler(commands=['профиль'])
+async def show_profile(message: types.Message):
+    await _send_profile(message)
+
+
+@dp.message_handler(lambda message: message.text == "👤 Профиль", state="*")
+async def show_profile_button(message: types.Message):
+    await _send_profile(message)
+
+
+# Кнопка "Отправить чек" — устанавливает стейт ожидания фото чека
+@dp.message_handler(lambda message: message.text == "💸 Отправить чек", state="*")
+async def send_check_info(message: types.Message, state: FSMContext):
+    await state.set_state(PhotoType.waiting_for_check)
+    await message.answer(
+        "📸 Пришли фото чека (скриншот или фото).\n\n"
+        "Я автоматически передам его администратору и зафиксирую оплату. "
+        "Чек должен быть понятным и с видимой суммой. Спасибо!"
+    )
+
+
+# Кнопка "ФОТО АВТО" — устанавливает стейт ожидания фото авто
+@dp.message_handler(lambda message: message.text == "📷 ФОТО АВТО", state="*")
+async def request_car_photos(message: types.Message, state: FSMContext):
+    await state.set_state(PhotoType.waiting_for_car_photo)
+    await message.answer(
+        "📷 Пожалуйста, пришли 5 фото автомобиля:\n"
+        "1. Справа\n2. Слева\n3. Спереди\n4. Сзади\n5. Спидометр\n\n"
+        "Можно отправить всё одним или несколькими сообщениями."
+    )
+
+
+# Приём фото чека
+@dp.message_handler(state=PhotoType.waiting_for_check, content_types=types.ContentType.PHOTO)
+async def receive_check_photo(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
     info = get_user_info(user_id)
 
     if not info:
         await message.answer("Ты не зарегистрирован в системе.")
+        await state.finish()
+        return
+
+    today = datetime.now().strftime("%d.%m.%Y")
+    caption = (
+        f"💸 Чек оплаты от {info['name']} ({info['car']})\n"
+        f"Telegram ID: {user_id}\n"
+        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    )
+
+    await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=message.photo[-1].file_id, caption=caption)
+    update_last_payment_date(user_id, today)
+    await message.answer("Чек принят. Оплата зафиксирована. Спасибо!")
+    await state.finish()
+
+
+# Приём фото авто
+@dp.message_handler(state=PhotoType.waiting_for_car_photo, content_types=types.ContentType.PHOTO)
+async def receive_car_photo(message: types.Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    info = get_user_info(user_id)
+
+    if not info:
+        await message.answer("Ты не зарегистрирован в системе.")
+        await state.finish()
         return
 
     caption = (
@@ -118,44 +182,8 @@ async def receive_photo(message: types.Message):
     await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=message.photo[-1].file_id, caption=caption)
     await message.answer("Фото принято. Спасибо!")
 
-@dp.message_handler(lambda message: message.text == "👤 Профиль")
-async def show_profile_button(message: types.Message):
-    from google_api import get_user_info, is_payment_today
 
-    user_id = str(message.from_user.id)
-    info = get_user_info(user_id)
-
-    if info:
-        payment_today = is_payment_today(user_id)
-        payment_status = "✅ Оплата за сегодня получена" if payment_today else "⚠️ Оплата за сегодня не найдена"
-
-        await message.answer(
-            f"👤 Имя: {info['name']}\n"
-            f"🚗 Госномер: {info['car']}\n"
-            f"📌 Статус: {info['status']}\n"
-            f"💸 Задолженность: {info['debt']} ₽\n"
-            f"{payment_status}"
-        )
-    else:
-        await message.answer("Ты не зарегистрирован в системе.")
-
-@dp.message_handler(lambda message: message.text == "💸 Отправить чек")
-async def send_check_info(message: types.Message):
-    await message.answer(
-        "📸 Чтобы отправить чек, просто пришли мне фото (скриншот или фото чека).\n\n"
-        "Я автоматически передам его администратору и зафиксирую оплату. "
-        "Чек должен быть понятным и с видимой суммой. Спасибо!"
-    )
-
-@dp.message_handler(lambda message: message.text == "📷 ФОТО АВТО")
-async def request_car_photos(message: types.Message):
-    await message.answer(
-        "📷 Пожалуйста, пришли 5 фото автомобиля:\n"
-        "1. Справа\n2. Слева\n3. Спереди\n4. Сзади\n5. Спидометр\n\n"
-        "Можно отправить всё одним или несколькими сообщениями."
-    )
-
-# Функция: бот рассылает напоминания арендаторам, которые не оплатили
+# Рассылка напоминаний об оплате
 async def notify_users_about_debt():
     users = get_all_users()
     if not users:
@@ -176,14 +204,19 @@ async def notify_users_about_debt():
             except Exception as e:
                 print(f"[Ошибка отправки уведомления {user_id}] {e}")
 
-# Планировщик: запуск каждый день в 23:00
-@aiocron.crontab('0 23 * * *')
+
+# Ежедневно в 23:00 — напоминание об оплате
+@aiocron.crontab('0 20 * * *')  # 20:00 UTC = 23:00 МСК
 async def scheduled_reminder():
     await notify_users_about_debt()
 
-# Каждые 2 недели по пятницам в 13:00
-@aiocron.crontab('0 13 */14 * 5')
+
+# Каждую пятницу в 13:00 МСК (10:00 UTC) — напоминание о фото (только чётные недели)
+@aiocron.crontab('0 10 * * 5')
 async def remind_photo_report():
+    if datetime.now().isocalendar()[1] % 2 != 0:
+        return
+
     users = get_all_users()
     for user in users:
         user_id = str(user.get("ID"))
@@ -201,6 +234,7 @@ async def remind_photo_report():
             )
         except Exception as e:
             print(f"[Ошибка отправки напоминания для {user_id}] {e}")
+
 
 # Запуск бота
 if __name__ == "__main__":
