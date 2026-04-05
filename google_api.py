@@ -1,4 +1,7 @@
 import os
+import json
+import base64
+import tempfile
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -12,11 +15,16 @@ _client = None
 def get_client():
     global _client
     if _client is None:
-        if not os.path.exists("credentials.json"):
+        creds_b64 = os.getenv("GOOGLE_CREDENTIALS_BASE64")
+        if creds_b64:
+            creds_json = json.loads(base64.b64decode(creds_b64).decode("utf-8"))
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+        elif os.path.exists("credentials.json"):
+            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+        else:
             raise FileNotFoundError(
-                "credentials.json не найден. Добавь файл сервисного аккаунта Google в папку с ботом."
+                "credentials.json не найден и GOOGLE_CREDENTIALS_BASE64 не задан."
             )
-        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
         _client = gspread.authorize(creds)
     return _client
 
