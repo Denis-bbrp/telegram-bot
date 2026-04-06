@@ -5,6 +5,9 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from datetime import datetime
+from aiohttp import web
+import asyncio
+import os
 import aiocron
 
 from config import BOT_TOKEN, ADMIN_GROUP_ID
@@ -236,6 +239,21 @@ async def remind_photo_report():
             print(f"[Ошибка отправки напоминания для {user_id}] {e}")
 
 
+# Простой веб-сервер для Render (Web Service требует открытый порт)
+async def health(request):
+    return web.Response(text="OK")
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 # Запуск бота
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(start_web())
+    executor.start_polling(dp, skip_updates=True, loop=loop)
