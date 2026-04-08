@@ -255,5 +255,6 @@ async def start_web():
 # Запуск бота
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(start_web())
+    if os.getenv("PORT"):  # только на Render
+        loop.run_until_complete(start_web())
     executor.start_polling(dp, skip_updates=True, loop=loop)
