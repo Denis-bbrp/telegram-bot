@@ -1,7 +1,7 @@
 import os
 import json
 import base64
-import tempfile
+import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -125,3 +125,29 @@ def get_all_users():
     except Exception as e:
         print(f"[Ошибка get_all_users] {e}")
         return []
+
+
+# Async-обёртки — запускают sync-функции в thread pool, не блокируют event loop
+async def async_get_user_info(telegram_id):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_user_info, telegram_id)
+
+
+async def async_is_payment_today(telegram_id):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, is_payment_today, telegram_id)
+
+
+async def async_add_user(user_id, name, car_plate):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, add_user, user_id, name, car_plate)
+
+
+async def async_update_last_payment_date(telegram_id, date_str):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, update_last_payment_date, telegram_id, date_str)
+
+
+async def async_get_all_users():
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_all_users)

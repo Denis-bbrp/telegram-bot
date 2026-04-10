@@ -11,7 +11,10 @@ import os
 import aiocron
 
 from config import BOT_TOKEN, ADMIN_GROUP_ID
-from google_api import get_user_info, add_user, get_all_users, is_payment_today, update_last_payment_date
+from google_api import (
+    async_get_user_info, async_add_user, async_get_all_users,
+    async_is_payment_today, async_update_last_payment_date
+)
 
 # Инициализация
 bot = Bot(token=BOT_TOKEN)
@@ -58,7 +61,7 @@ async def greet_user(message: types.Message):
 @dp.message_handler(lambda message: message.text == "🔐 Я арендатор", state="*")
 async def start_registration(message: types.Message, state: FSMContext):
     telegram_id = str(message.from_user.id)
-    info = get_user_info(telegram_id)
+    info = await async_get_user_info(telegram_id)
 
     if info:
         await message.answer(f"Ты уже зарегистрирован как {info['name']}, номер авто: {info['car']}")
@@ -85,7 +88,7 @@ async def process_car(message: types.Message, state: FSMContext):
     car = message.text
     telegram_id = user_data.get("telegram_id")
 
-    add_user(telegram_id, name, car)
+    await async_add_user(telegram_id, name, car)
     await message.answer(f"Спасибо, {name}! Ты зарегистрирован как арендатор машины {car}.")
     await state.finish()
 
@@ -93,10 +96,10 @@ async def process_car(message: types.Message, state: FSMContext):
 # Профиль (кнопка и команда)
 async def _send_profile(message: types.Message):
     user_id = str(message.from_user.id)
-    info = get_user_info(user_id)
+    info = await async_get_user_info(user_id)
 
     if info:
-        payment_today = is_payment_today(user_id)
+        payment_today = await async_is_payment_today(user_id)
         payment_status = "✅ Оплата за сегодня получена" if payment_today else "⚠️ Оплата за сегодня не найдена"
         await message.answer(
             f"👤 Имя: {info['name']}\n"
@@ -145,7 +148,7 @@ async def request_car_photos(message: types.Message, state: FSMContext):
 @dp.message_handler(state=PhotoType.waiting_for_check, content_types=types.ContentType.PHOTO)
 async def receive_check_photo(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
-    info = get_user_info(user_id)
+    info = await async_get_user_info(user_id)
 
     if not info:
         await message.answer("Ты не зарегистрирован в системе.")
@@ -160,7 +163,7 @@ async def receive_check_photo(message: types.Message, state: FSMContext):
     )
 
     await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=message.photo[-1].file_id, caption=caption)
-    update_last_payment_date(user_id, today)
+    await async_update_last_payment_date(user_id, today)
     await message.answer("Чек принят. Оплата зафиксирована. Спасибо!")
     await state.finish()
 
@@ -169,7 +172,7 @@ async def receive_check_photo(message: types.Message, state: FSMContext):
 @dp.message_handler(state=PhotoType.waiting_for_car_photo, content_types=types.ContentType.PHOTO)
 async def receive_car_photo(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
-    info = get_user_info(user_id)
+    info = await async_get_user_info(user_id)
 
     if not info:
         await message.answer("Ты не зарегистрирован в системе.")
@@ -188,24 +191,29 @@ async def receive_car_photo(message: types.Message, state: FSMContext):
 
 # Рассылка напоминаний об оплате
 async def notify_users_about_debt():
-    users = get_all_users()
+    users = await async_get_all_users()
     if not users:
         return
 
+    today = datetime.now().strftime("%d.%m.%Y")
+    tasks = []
     for user in users:
         user_id = str(user.get("ID"))
         name = user.get("Имя")
         car = user.get("ГРЗ")
+        last_payment = str(user.get("Последняя оплата", "")).strip()
 
-        if not is_payment_today(user_id):
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"❗ Привет, {name}!\n\nТы ещё не оплатил аренду за сегодня.\n"
-                    f"🚗 Госномер: {car}\n\nПожалуйста, отправь чек до полуночи. Спасибо!"
-                )
-            except Exception as e:
-                print(f"[Ошибка отправки уведомления {user_id}] {e}")
+        if last_payment != today:
+            tasks.append(bot.send_message(
+                user_id,
+                f"❗ Привет, {name}!\n\nТы ещё не оплатил аренду за сегодня.\n"
+                f"🚗 Госномер: {car}\n\nПожалуйста, отправь чек до полуночи. Спасибо!"
+            ))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            print(f"[Ошибка отправки уведомления] {result}")
 
 
 # Ежедневно в 23:00 — напоминание об оплате
@@ -220,7 +228,8 @@ async def remind_photo_report():
     if datetime.now().isocalendar()[1] % 2 != 0:
         return
 
-    users = get_all_users()
+    users = await async_get_all_users()
+    tasks = []
     for user in users:
         user_id = str(user.get("ID"))
         name = user.get("Имя")
@@ -228,15 +237,17 @@ async def remind_photo_report():
         if not user_id:
             continue
 
-        try:
-            await bot.send_message(
-                user_id,
-                f"📷 Привет, {name}!\n\nНапоминаем, что пора прислать свежие фото автомобиля:\n"
-                "1. Справа\n2. Слева\n3. Спереди\n4. Сзади\n5. Спидометр\n\n"
-                "Ждём фотоотчёт 🙌"
-            )
-        except Exception as e:
-            print(f"[Ошибка отправки напоминания для {user_id}] {e}")
+        tasks.append(bot.send_message(
+            user_id,
+            f"📷 Привет, {name}!\n\nНапоминаем, что пора прислать свежие фото автомобиля:\n"
+            "1. Справа\n2. Слева\n3. Спереди\n4. Сзади\n5. Спидометр\n\n"
+            "Ждём фотоотчёт 🙌"
+        ))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            print(f"[Ошибка отправки напоминания] {result}")
 
 
 # Простой веб-сервер для Render (Web Service требует открытый порт)
