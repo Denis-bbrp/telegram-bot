@@ -5,6 +5,7 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from datetime import datetime
+import aiohttp
 from aiohttp import web
 import asyncio
 import os
@@ -214,6 +215,19 @@ async def notify_users_about_debt():
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             print(f"[Ошибка отправки уведомления] {result}")
+
+
+# Самопинг каждые 10 минут — не даёт Render Free засыпать
+@aiocron.crontab('*/10 * * * *')
+async def self_ping():
+    url = os.getenv("RENDER_EXTERNAL_URL")
+    if url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.get(url, timeout=aiohttp.ClientTimeout(total=10))
+            print("[self_ping] OK")
+        except Exception as e:
+            print(f"[self_ping] {e}")
 
 
 # Ежедневно в 23:00 — напоминание об оплате
